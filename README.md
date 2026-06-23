@@ -3,14 +3,18 @@ This driver was written to drive the ILI9488 IC via 4-wire SPI.
 Three GPIO outputs must be configured in addition to SPI.
 
 ## Setup
-Simply copy the `Lib` folder into the project `Core` directory. Make sure to `#include` the library in your main file and add it to `CMakeLists.txt` (if using CMake).
+Execute the following command to add this repo as a submodule.
+```
+git submodule add https://github.com/Sam767T/ILI9488-STM32-HAL-Driver.git Core/Lib/ILI9488
+```
+Make sure to `#include` the library in your main file and add it to `CMakeLists.txt` (if using CMake).
 
 For boards outside the STM32U5 family, this line must be modified:
 ```c
 #include "stm32u5xx_hal.h"  // line 9 of ILI9488.c
 ```
 
-Pin definitions must also be corrected in `ILI9488.h` (line 20). Alternatively, the following labels can be applied to arbitrary output GPIOs in CubeMX:
+Pin definitions must also be corrected in `ILI9488.h` (line 20). Alternatively, the following labels can be applied to arbitrary output GPIOs in STM32CubeMX:
 * `LCD_RST`: Reset
 * `LCD_DC`: Data/Command
 * `LCD_CS`: Chip Select
