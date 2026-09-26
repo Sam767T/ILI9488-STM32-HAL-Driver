@@ -14,6 +14,8 @@
 #include <stdbool.h>
 
 /*** Redefine if necessary ***/
+// Pixel data is sent by DMA, so the SPI handle needs a TX DMA channel linked to it, with the
+// DMA channel's and the SPI's interrupts enabled.
 #define ILI9488_SPI_PORT hspi1
 extern SPI_HandleTypeDef ILI9488_SPI_PORT;
 
@@ -37,6 +39,10 @@ extern SPI_HandleTypeDef ILI9488_SPI_PORT;
 #define ILI9488_HEIGHT	480
 #endif
 
+// The panel's gate lines run along its long side in both orientations. Hardware scrolling moves
+// the image along these lines, which is horizontal in landscape and vertical in portrait.
+#define ILI9488_SCROLL_LINES	480
+
 // Color definitions (18-bit RGB666)
 #define	RGB666_BLACK	0x00000
 #define	RGB666_BLUE     0x0003F
@@ -47,8 +53,8 @@ extern SPI_HandleTypeDef ILI9488_SPI_PORT;
 #define RGB666_YELLOW	0x3FFC0
 #define RGB666_WHITE	0xFFFFF
 
-// Number of burst buffer pixels
-#define N_BURST_PIXELS	256
+// Number of pixels sent per DMA transfer. Larger bursts mean fewer restarts between them.
+#define N_BURST_PIXELS	1024
 
 // Call before initializing any SPI devices
 void ILI9488_ChipDeselect(void);
@@ -60,5 +66,17 @@ void ILI9488_DrawVLine(uint16_t x, uint16_t y, uint16_t h, uint32_t colour);
 void ILI9488_FillScreen(uint32_t colour);
 void ILI9488_WriteString(uint16_t x, uint16_t y, const char* str, FontDef font, uint32_t colour, uint32_t bgcolor);
 void ILI9488_FillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint32_t colour);
+
+// Panel refresh rate. frs is the FRS[3:0] code from the datasheet's Frame Rate Control (B1h) table:
+// 0x0 = 28.78 Hz ... 0xA = 60.76 Hz (the default set by ILI9488_Init) ... 0xD = 91.15 Hz (the fastest).
+// On the DFR0669 in landscape, 0xD leaves the top rows dark, so 0xC (78.13 Hz) is its fastest.
+void ILI9488_SetFrameRate(uint8_t frs);
+
+// Hardware scrolling along ILI9488_SCROLL_LINES. The fixed areas stay put and the lines between them
+// scroll. ILI9488_ScrollTo sets which frame memory line is shown first in the scrolling area, and the
+// panel applies it at the start of its next refresh, so scrolling never tears. The datasheet requires
+// row/column exchange to be off for memory writes while scrolled, so in landscape draw before scrolling.
+void ILI9488_SetScrollArea(uint16_t top_fixed, uint16_t bottom_fixed);
+void ILI9488_ScrollTo(uint16_t line);
 
 #endif // __ILI9488_H__

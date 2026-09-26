@@ -21,6 +21,8 @@ Pin definitions must also be corrected in `ILI9488.h` (line 20). Alternatively, 
 
 If CubeMX is used to configure SPI, set `mode` to `Transmit Only Master` and `Data Size` to `8 bits`.
 
+Pixel data is sent by DMA, so the SPI also needs a TX DMA request (on the STM32U5, a GPDMA1 channel in standard request mode with request `SPI1_TX`), and both the DMA channel's and the SPI's global interrupts enabled.
+
 By default, the display is in landscape mode, but portrait can be selected by setting `LANDSCAPE_ORIENTATION` to `0` in the header file.
 
 Finally, this library relies on the STM32 HAL library.

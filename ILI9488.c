@@ -43,6 +43,15 @@ static void ILI9488_WriteData(uint8_t* buff, size_t buff_size) {
     }
 }
 
+// Pixel data is sent from here by DMA. It's static so that it outlives each transfer.
+static uint8_t pixel_buf[3 * N_BURST_PIXELS];
+
+// Sends the first size bytes of pixel_buf by DMA, and waits for them to go out
+static void ILI9488_SendPixelBuffer(uint16_t size) {
+    if (HAL_SPI_Transmit_DMA(&ILI9488_SPI_PORT, pixel_buf, size) != HAL_OK) return;
+    while (HAL_SPI_GetState(&ILI9488_SPI_PORT) != HAL_SPI_STATE_READY) {}
+}
+
 static void ILI9488_RGB666ToBytes(uint32_t colour, uint8_t* red, uint8_t* green, uint8_t* blue) {
     *red = (colour >> 10) & 0xFC;
     *green = (colour >> 4) & 0xFC;
@@ -190,6 +199,33 @@ void ILI9488_DrawPixel(uint16_t x, uint16_t y, uint32_t color) {
     ILI9488_ChipDeselect();
 }
 
+void ILI9488_SetFrameRate(uint8_t frs) {
+    ILI9488_ChipSelect();
+    ILI9488_WriteCommand(0xB1); // Frame Rate Control (In Normal Mode/Full Colors)
+    uint8_t data[] = {(uint8_t)(frs << 4), 0x11}; // Division ratio Fosc, 17 clocks per line
+    ILI9488_WriteData(data, sizeof(data));
+    ILI9488_ChipDeselect();
+}
+
+void ILI9488_SetScrollArea(uint16_t top_fixed, uint16_t bottom_fixed) {
+    uint16_t scrolling = ILI9488_SCROLL_LINES - top_fixed - bottom_fixed;
+
+    ILI9488_ChipSelect();
+    ILI9488_WriteCommand(0x33); // Vertical Scrolling Definition
+    uint8_t data[] = {top_fixed >> 8, top_fixed & 0xFF, scrolling >> 8, scrolling & 0xFF,
+                        bottom_fixed >> 8, bottom_fixed & 0xFF};
+    ILI9488_WriteData(data, sizeof(data));
+    ILI9488_ChipDeselect();
+}
+
+void ILI9488_ScrollTo(uint16_t line) {
+    ILI9488_ChipSelect();
+    ILI9488_WriteCommand(0x37); // Vertical Scrolling Start Address
+    uint8_t data[] = {line >> 8, line & 0xFF};
+    ILI9488_WriteData(data, sizeof(data));
+    ILI9488_ChipDeselect();
+}
+
 void ILI9488_FillScreen(uint32_t colour) {
     ILI9488_FillRectangle(0, 0, ILI9488_WIDTH, ILI9488_HEIGHT, colour);
 }
@@ -205,9 +241,8 @@ void ILI9488_DrawVLine(uint16_t x, uint16_t y, uint16_t h, uint32_t colour) {
 }
 
 static void ILI9488_WriteChar(uint16_t x, uint16_t y, char ch, FontDef font, uint32_t colour, uint32_t bgcolor) {
-    uint32_t i, j;
+    uint32_t i, j, buffered = 0;
     uint8_t fg[3], bg[3];
-    uint8_t row_buf[3 * 32];
 
     if((x >= ILI9488_WIDTH) || (y >= ILI9488_HEIGHT)) return;
     if((x + font.width - 1) >= ILI9488_WIDTH) return;
@@ -222,35 +257,22 @@ static void ILI9488_WriteChar(uint16_t x, uint16_t y, char ch, FontDef font, uin
     ILI9488_SetAddressWindow(x, y, x + font.width - 1, y + font.height - 1);
     HAL_GPIO_WritePin(ILI9488_DC_Port, ILI9488_DC_Pin, GPIO_PIN_SET);
 
-    if(font.width <= 32U) {
-        for(i = 0; i < font.height; i++) {
-            uint16_t row = font.data[(ch - 32) * font.height + i];
-            for(j = 0; j < font.width; j++) {
-                uint8_t* px = &row_buf[j * 3U];
-                if((row << j) & 0x8000) {
-                    px[0] = fg[0];
-                    px[1] = fg[1];
-                    px[2] = fg[2];
-                } else {
-                    px[0] = bg[0];
-                    px[1] = bg[1];
-                    px[2] = bg[2];
-                }
-            }
-            HAL_SPI_Transmit(&ILI9488_SPI_PORT, row_buf, (uint16_t)(font.width * 3U), HAL_MAX_DELAY);
-        }
-    } else {
-        for(i = 0; i < font.height; i++) {
-            uint16_t row = font.data[(ch - 32) * font.height + i];
-            for(j = 0; j < font.width; j++) {
-                if((row << j) & 0x8000) {
-                    HAL_SPI_Transmit(&ILI9488_SPI_PORT, fg, sizeof(fg), HAL_MAX_DELAY);
-                } else {
-                    HAL_SPI_Transmit(&ILI9488_SPI_PORT, bg, sizeof(bg), HAL_MAX_DELAY);
-                }
+    for(i = 0; i < font.height; i++) {
+        uint16_t row = font.data[(ch - 32) * font.height + i];
+        for(j = 0; j < font.width; j++) {
+            const uint8_t* src = ((row << j) & 0x8000) ? fg : bg;
+            uint8_t* px = &pixel_buf[buffered * 3U];
+            px[0] = src[0];
+            px[1] = src[1];
+            px[2] = src[2];
+            if(++buffered == N_BURST_PIXELS) {
+                ILI9488_SendPixelBuffer(buffered * 3U);
+                buffered = 0;
             }
         }
     }
+    if(buffered > 0U) ILI9488_SendPixelBuffer(buffered * 3U);
+
     ILI9488_ChipDeselect();
 }
 
@@ -285,21 +307,23 @@ void ILI9488_WriteString(uint16_t x, uint16_t y, const char* str, FontDef font, 
 }
 
 void ILI9488_FillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint32_t colour) {
-    uint32_t i, remaining_pixels = w * h;
-    uint8_t burst_buf[3 * N_BURST_PIXELS];
+    uint32_t i, remaining_pixels, buffered_pixels;
 
     if ((x >= ILI9488_WIDTH) || (y >= ILI9488_HEIGHT)) return;
     if ((w == 0U) || (h == 0U)) return;
     if ((x + w - 1U) >= ILI9488_WIDTH) w = ILI9488_WIDTH - x;
     if ((y + h - 1U) >= ILI9488_HEIGHT) h = ILI9488_HEIGHT - y;
+    remaining_pixels = w * h;
 
+    // The colour never changes, so fill the buffer once and send it as many times as needed
+    buffered_pixels = (remaining_pixels > N_BURST_PIXELS) ? N_BURST_PIXELS : remaining_pixels;
     {
         uint8_t red, green, blue;
         ILI9488_RGB666ToBytes(colour, &red, &green, &blue);
-        for(i = 0; i < N_BURST_PIXELS; i++) {
-            burst_buf[i * 3U + 0U] = red;
-            burst_buf[i * 3U + 1U] = green;
-            burst_buf[i * 3U + 2U] = blue;
+        for(i = 0; i < buffered_pixels; i++) {
+            pixel_buf[i * 3U + 0U] = red;
+            pixel_buf[i * 3U + 1U] = green;
+            pixel_buf[i * 3U + 2U] = blue;
         }
     }
 
@@ -309,7 +333,7 @@ void ILI9488_FillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint3
 
     while(remaining_pixels > 0U) {
         uint16_t this_burst = (remaining_pixels > N_BURST_PIXELS) ? N_BURST_PIXELS : remaining_pixels;
-        HAL_SPI_Transmit(&ILI9488_SPI_PORT, burst_buf, (this_burst * 3U), HAL_MAX_DELAY);
+        ILI9488_SendPixelBuffer(this_burst * 3U);
         remaining_pixels -= this_burst;
     }
 
