@@ -42,6 +42,7 @@ extern SPI_HandleTypeDef ILI9488_SPI_PORT;
 // The panel's gate lines run along its long side in both orientations. Hardware scrolling moves
 // the image along these lines, which is horizontal in landscape and vertical in portrait.
 #define ILI9488_SCROLL_LINES	480
+#define ILI9488_LINE_PIXELS		320		// Along each of those lines
 
 // Color definitions (18-bit RGB666)
 #define	RGB666_BLACK	0x00000
@@ -75,8 +76,16 @@ void ILI9488_SetFrameRate(uint8_t frs);
 // Hardware scrolling along ILI9488_SCROLL_LINES. The fixed areas stay put and the lines between them
 // scroll. ILI9488_ScrollTo sets which frame memory line is shown first in the scrolling area, and the
 // panel applies it at the start of its next refresh, so scrolling never tears. The datasheet requires
-// row/column exchange to be off for memory writes while scrolled, so in landscape draw before scrolling.
+// row/column exchange to be off for memory writes while scrolled, so in landscape the other drawing
+// functions only work before scrolling, or after ILI9488_StopScrolling. ILI9488_DrawScrollLine works
+// either way.
 void ILI9488_SetScrollArea(uint16_t top_fixed, uint16_t bottom_fixed);
 void ILI9488_ScrollTo(uint16_t line);
+void ILI9488_StopScrolling(void);   // Shows the frame memory unscrolled again
+
+// Draws a whole frame memory line from ILI9488_LINE_PIXELS colours, in either orientation, scrolled or
+// not. Before any scrolling, the line is at y = line in portrait, with the colours running left to right,
+// and at x = ILI9488_SCROLL_LINES - 1 - line in landscape, with the colours running top to bottom.
+void ILI9488_DrawScrollLine(uint16_t line, const uint32_t* colours);
 
 #endif // __ILI9488_H__

@@ -9,6 +9,15 @@
 #include "stm32u5xx_hal.h"  // Change if not using STM32U5 family
 #include "ILI9488.h"
 
+// Memory Access Control (36h) settings. Landscape exchanges rows and columns, and portrait doesn't.
+#define ILI9488_MADCTL_PORTRAIT		0x48
+#define ILI9488_MADCTL_LANDSCAPE	0xE8
+#if LANDSCAPE_ORIENTATION
+#define ILI9488_MADCTL	ILI9488_MADCTL_LANDSCAPE
+#else
+#define ILI9488_MADCTL	ILI9488_MADCTL_PORTRAIT
+#endif
+
 static void ILI9488_ChipSelect() {
     HAL_GPIO_WritePin(ILI9488_CS_Port, ILI9488_CS_Pin, GPIO_PIN_RESET);
 }
@@ -108,14 +117,7 @@ void ILI9488_Init() {
     // Memory Access Control
     ILI9488_WriteCommand(0x36);
     {
-        #if LANDSCAPE_ORIENTATION
-        // Landscape mode
-        uint8_t data[] = {0xE8};
-        #else
-        // Portrait mode
-        uint8_t data[] = {0x48};
-        #endif
-        
+        uint8_t data[] = {ILI9488_MADCTL};
         ILI9488_WriteData(data, sizeof(data));
     }
 
@@ -223,6 +225,45 @@ void ILI9488_ScrollTo(uint16_t line) {
     ILI9488_WriteCommand(0x37); // Vertical Scrolling Start Address
     uint8_t data[] = {line >> 8, line & 0xFF};
     ILI9488_WriteData(data, sizeof(data));
+    ILI9488_ChipDeselect();
+}
+
+void ILI9488_StopScrolling(void) {
+    ILI9488_ChipSelect();
+    ILI9488_WriteCommand(0x13); // Normal Display Mode On, which turns scrolling off
+    ILI9488_ChipDeselect();
+}
+
+void ILI9488_DrawScrollLine(uint16_t line, const uint32_t* colours) {
+    uint32_t i, buffered = 0;
+
+    if (line >= ILI9488_SCROLL_LINES) return;
+
+    ILI9488_ChipSelect();
+
+    // Rows and columns can't be exchanged while writing, so the line is written as a portrait row,
+    // which is a row of frame memory
+    uint8_t portrait = ILI9488_MADCTL_PORTRAIT;
+    ILI9488_WriteCommand(0x36);
+    ILI9488_WriteData(&portrait, sizeof(portrait));
+
+    ILI9488_SetAddressWindow(0, line, ILI9488_LINE_PIXELS - 1, line);
+    HAL_GPIO_WritePin(ILI9488_DC_Port, ILI9488_DC_Pin, GPIO_PIN_SET);
+
+    for (i = 0; i < ILI9488_LINE_PIXELS; i++) {
+        uint8_t* px = &pixel_buf[buffered * 3U];
+        ILI9488_RGB666ToBytes(colours[i], &px[0], &px[1], &px[2]);
+        if (++buffered == N_BURST_PIXELS) {
+            ILI9488_SendPixelBuffer(buffered * 3U);
+            buffered = 0;
+        }
+    }
+    if (buffered > 0U) ILI9488_SendPixelBuffer(buffered * 3U);
+
+    uint8_t orientation = ILI9488_MADCTL;
+    ILI9488_WriteCommand(0x36);
+    ILI9488_WriteData(&orientation, sizeof(orientation));
+
     ILI9488_ChipDeselect();
 }
 
